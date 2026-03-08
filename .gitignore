@@ -1,4 +1,5 @@
 .DS_Store
 .env.keys
 
+tmp/
 node_modules/
