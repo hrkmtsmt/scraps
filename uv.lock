@@ -465,7 +465,7 @@ wheels = [
 ]
 
 [[package]]
-name = "scripts"
+name = "scraps"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

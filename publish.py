@@ -4,7 +4,7 @@ import io
 import os
 from pathlib import Path
 import re
-import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.parse
 import wave
 
@@ -26,10 +26,17 @@ CLOUDFLARE_R2_SECRET_ACCESS_KEY = os.environ["CLOUDFLARE_R2_SECRET_ACCESS_KEY"]
 
 
 class Scrap(BaseModel):
-    path: str
-    text: str
+    filename: str
+    markdown: str
     mp3: str
     hash: str
+
+
+class Upload(BaseModel):
+    object_key: str
+    mp3: bytes
+    filename: str
+    markdown: str
 
 
 if __name__ == "__main__":
@@ -44,7 +51,8 @@ if __name__ == "__main__":
         region_name="auto",
     )
 
-    items: list[Scrap] = []
+    scraps: list[Scrap] = []
+    uploads: list[Upload] = []
 
     for file in files:
         md = file.read_text("utf-8")
@@ -112,20 +120,30 @@ if __name__ == "__main__":
         mp3_path.parent.mkdir(parents=True, exist_ok=True)
         mp3_path.write_bytes(mp3)
 
-        r2.put_object(
-            Bucket=CLOUDFLARE_R2_BUCKET,
-            Key=object_key,
-            Body=mp3,
-            ContentType="audio/mpeg",
-        )
-        print(f"Success save to R2")
+        uploads.append(Upload(object_key=object_key, mp3=mp3, filename=filename, markdown=md))
 
-        items.append(Scrap(
-            path=filename,
-            text=md,
-            mp3=f"https://assets.hrkmtsmt.me/{object_key}",
-            hash=hashlib.sha256(md.encode()).hexdigest(),
-        ))
+    with ThreadPoolExecutor() as executor:
+        futures = {
+            executor.submit(
+                r2.put_object,
+                Bucket=CLOUDFLARE_R2_BUCKET,
+                Key=upload.object_key,
+                Body=upload.mp3,
+                ContentType="audio/mpeg",
+            ): upload
+            for upload in uploads
+        }
+
+        for future in as_completed(futures):
+            future.result()
+            upload = futures[future]
+            print(f"Success save to R2: {upload.object_key}")
+            scraps.append(Scrap(
+                filename=upload.filename,
+                markdown=upload.markdown,
+                mp3=f"https://assets.hrkmtsmt.me/{upload.object_key}",
+                hash=hashlib.sha256(upload.markdown.encode()).hexdigest(),
+            ))
 
     username = os.environ['BASIC_AUTH_USERNAME']
     password = os.environ['BASIC_AUTH_PASSWORD']
@@ -137,5 +155,5 @@ if __name__ == "__main__":
             "Authorization": f"Basic {token}",
             "Content-Type": "application/json",
         },
-        json=[item.model_dump(mode="json") for item in items],
+        json=[scrap.model_dump(mode="json") for scrap in scraps],
     ).raise_for_status()
